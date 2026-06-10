@@ -4,13 +4,16 @@
 
 // Binary append log of MinRecord structs.
 // File: /energy.bin  (32 bytes per record, no header)
-// LittleFS partition (~1.4 MB on default 4 MB scheme):
-//   max records ≈ 44,000  →  ~30 days at 1 rec/min
+// Capped at ENERGY_MAX (1.2 MB) → 1.2e6 / 32 ≈ 37,500 records ≈ 26 days at
+// 1 rec/min. (The LittleFS partition itself is larger; ENERGY_MAX is the cap.)
 
 static const char  ENERGY_FILE[]    = "/energy.bin";
 static const char  PREV_BOX_FILE[]  = "/prev_box.bin";  // 24 bytes: float[3] kwh + float[3] kvarh
 static const size_t ENERGY_MAX      = 1200000UL;  // ~1.2 MB cap (~26 days)
 
+// Separate flag from the global `lfsOk` used by ErrorLog/Snapshot. Both are set
+// together via `lfsOk = energyLogInit();` in the sketch — keep that call intact,
+// or the two views of "is LittleFS mounted" will diverge silently.
 static bool _lfsOk = false;
 
 static bool energyLogInit() {
@@ -35,7 +38,11 @@ static bool energyLogInit() {
 static void energyLogAppend(const MinRecord& rec) {
   if (!_lfsOk) return;
 
-  // Rotate if approaching cap: delete oldest half by rewriting
+  // Rotate if approaching cap: delete oldest half by rewriting.
+  // Rotation buffer is ps_malloc(~600 KB); if PSRAM is absent/exhausted the
+  // alloc fails and rotation is skipped — the file then grows past ENERGY_MAX.
+  // Acceptable on boards with PSRAM (all current targets); revisit if porting
+  // to a no-PSRAM board.
   if (LittleFS.exists(ENERGY_FILE)) {
     File f = LittleFS.open(ENERGY_FILE, "r");
     if (f && f.size() >= ENERGY_MAX) {

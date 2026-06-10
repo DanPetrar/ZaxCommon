@@ -3,6 +3,10 @@
 
 // PSRAM-backed circular ring buffer — runtime capacity.
 // age=0 → newest entry, age=cnt-1 → oldest.
+//
+// NOT ISR-safe: push()/get() mutate head/cnt non-atomically. The energy rings
+// are only touched from loop() (after a parse cycle), never from an ISR, so no
+// locking is needed. Do not call push() from an interrupt without adding one.
 
 // ── per-board capacity constants ──────────────────────────────────────────────
 #if defined(BOARD_DEVKITC1) || defined(BOARD_LILYGO_T7S3)

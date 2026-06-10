@@ -5,7 +5,10 @@
 #include "ErrorLog.h"
 
 // Periodic atomic snapshot of PSRAM rings to LittleFS.
-// Write flow: write to .tmp → rename to .bin (atomic; old file survives a write failure).
+// Write flow: write to .tmp → remove(.bin) → rename(.tmp, .bin).
+//   A write failure leaves the old .bin untouched. The one uncovered case is a
+//   power loss in the remove→rename window: .bin is gone, only .tmp remains.
+//   LittleFS rename won't replace an existing dst, hence the explicit remove.
 // Restore flow: push records oldest-first into ring on boot.
 
 #if TEST_MODE
