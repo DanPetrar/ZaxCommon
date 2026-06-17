@@ -35,6 +35,14 @@ PROJECTS = {1: "EnergyCalibrator", 2: "ZaxModbus", 3: "ZaxEnergySurvey",
 BOARDS   = {0: "lilygo", 1: "s3zero", 2: "devkitc1", 3: "classic_esp32"}
 VARIANTS = {0: "default", 1: "base", 2: "sat"}
 
+# Legacy descriptor used by the Zax family (EnergyCalibrator/ZaxModbus/ZaxEnergySurvey).
+# Their OTA path already enforces project_id + hw_target; this lets the same guard read
+# them on the USB path without changing that firmware.
+ZAXOTAMETA_MAGIC = 0x5A415843            # 'ZAXC'
+_OTA_FMT  = "<I12sBBHHB9s"               # magic, fw[12], hw_target, data_version, sec_sz, min_sz, project_id, pad[9]
+_OTA_SIZE = struct.calcsize(_OTA_FMT)    # = 32
+assert _OTA_SIZE == 32, _OTA_SIZE
+
 ESPTOOL = next(iter(sorted(glob.glob(
     "/home/pi/.arduino15/packages/esp32/tools/esptool_py/*/esptool"), reverse=True)), None)
 APP_OFFSET   = 0x10000      # app0 start under defaultffat / default schemes
@@ -58,22 +66,56 @@ def parse_ident(blob, i):
     magic, schema, proj, board, variant, fw, dv, _ = struct.unpack_from(_FMT, blob, i)
     return {"magic": magic, "schema_ver": schema, "project_id": proj,
             "board_type": board, "variant": variant,
-            "fw_version": fw.split(b"\0")[0].decode("latin1"), "data_version": dv}
+            "fw_version": fw.split(b"\0")[0].decode("latin1"), "data_version": dv,
+            "_fmt": "zaxident"}
+
+
+def _otameta_board(project_id, hw_target):
+    """Map a ZaxOtaMeta hw_target to the canonical board_type (mapping was per-project).
+       ZaxModbus(2)/ZaxEnergySurvey(3): hw_target 1=lilygo, 0=s3zero.
+       EnergyCalibrator(1) used the inverse — retired, not supported here."""
+    if project_id in (2, 3):
+        return 0 if hw_target == 1 else 1     # 0=lilygo, 1=s3zero
+    return None
+
+
+def parse_otameta(blob, i):
+    magic, fw, hw, dv, secsz, minsz, proj, _ = struct.unpack_from(_OTA_FMT, blob, i)
+    return {"magic": magic, "schema_ver": None, "project_id": proj,
+            "board_type": _otameta_board(proj, hw), "hw_target": hw, "variant": 0,
+            "fw_version": fw.split(b"\0")[0].decode("latin1"), "data_version": dv,
+            "sec_rec_size": secsz, "min_rec_size": minsz, "_fmt": "zaxotameta"}
 
 
 def scan_blob(blob):
-    """Return the first valid ZaxIdent dict in blob, or None."""
+    """Return the first valid identity descriptor (ZaxIdent or legacy ZaxOtaMeta), or None."""
+    # ZaxIdent (EmonESP family + future unified)
     needle = struct.pack("<I", ZAXIDENT_MAGIC)
     off = 0
     while True:
         i = blob.find(needle, off)
         if i < 0 or i + _SIZE > len(blob):
-            return None
+            break
         d = parse_ident(blob, i)
         if d["schema_ver"] == ZAXIDENT_SCHEMA_VER:    # filter coincidental magic
             d["_offset"] = i
             return d
         off = i + 1
+    # ZaxOtaMeta (legacy Zax family)
+    needle = struct.pack("<I", ZAXOTAMETA_MAGIC)
+    off = 0
+    while True:
+        i = blob.find(needle, off)
+        if i < 0 or i + _OTA_SIZE > len(blob):
+            break
+        d = parse_otameta(blob, i)
+        # sanity-gate against a coincidental magic: plausible record sizes + known project
+        if 0 < d["sec_rec_size"] < 1024 and 0 < d["min_rec_size"] < 1024 \
+           and d["project_id"] in PROJECTS and d["board_type"] is not None:
+            d["_offset"] = i
+            return d
+        off = i + 1
+    return None
 
 
 def fmt(d):
@@ -149,7 +191,7 @@ def cmd_check(a):
     if (img["project_id"], img["board_type"], img["variant"]) != (exp_p, exp_b, exp_v):
         print(f"[guard] ABORT: image identity != expected\n  expected: {exp}\n  image   : {fmt(img)}")
         sys.exit(1)
-    if img["schema_ver"] != ZAXIDENT_SCHEMA_VER:
+    if img.get("_fmt") == "zaxident" and img["schema_ver"] != ZAXIDENT_SCHEMA_VER:
         print(f"[guard] ABORT: image schema_ver {img['schema_ver']} != {ZAXIDENT_SCHEMA_VER}")
         sys.exit(1)
 
@@ -159,8 +201,8 @@ def cmd_check(a):
         if a.first_flash:
             print(f"[guard] OK (first-flash): blank/old device; image {fmt(img)}")
             return
-        print("[guard] ABORT: no ZaxIdent on device (blank/old firmware). "
-              "Pass --first-flash to allow flashing a fresh board.")
+        print("[guard] ABORT: no identity descriptor on device (blank / legacy pre-identity "
+              "firmware). Pass --first-flash to allow flashing a fresh/legacy board.")
         sys.exit(1)
     if (dev["project_id"], dev["board_type"], dev["variant"]) != (exp_p, exp_b, exp_v):
         print(f"[guard] ABORT: device identity != expected (wrong unit on {a.port})\n"
