@@ -1,6 +1,7 @@
 #pragma once
 #include <LittleFS.h>
 #include <time.h>
+#include "PersistBudget.h"
 
 // Rolling text error log on LittleFS.
 // Format: "YYYY-MM-DD HH:MM:SS [LEVEL] message\n"
@@ -16,10 +17,11 @@ static int8_t _errTzOfs = 0;
 static void errorLogSetTz(int8_t tz) { _errTzOfs = tz; }
 
 static void _errRotate() {
+  size_t cap = gErrLogMax ? gErrLogMax : ERR_LOG_MAX;
   File f = LittleFS.open(ERR_LOG_FILE, "r");
   if (!f) return;
   size_t sz = f.size();
-  if (sz < ERR_LOG_MAX) { f.close(); return; }
+  if (sz < cap) { f.close(); return; }
 
   // Seek to halfway, then forward to next newline for a clean line boundary
   f.seek(sz / 2);
@@ -49,7 +51,7 @@ static uint32_t _errLastMs       = 0;
 static uint16_t _errRepeatCount  = 0;
 
 static void _errWriteLine(const char* line) {
-  if (!lfsOk) return;
+  if (!lfsOk || gPersistMode == 0) return;   // OFF → Serial-only (logged by caller)
   File f = LittleFS.open(ERR_LOG_FILE, "a");
   if (!f) return;
   f.write((const uint8_t*)line, strlen(line));

@@ -3,6 +3,7 @@
 #include "RingBuf.h"
 #include "Config.h"
 #include "ErrorLog.h"
+#include "PersistBudget.h"
 
 // Periodic atomic snapshot of PSRAM rings to LittleFS.
 // Write flow: write to .tmp → remove(.bin) → rename(.tmp, .bin).
@@ -35,9 +36,18 @@ struct SnapHeader {
 
 // Write ring contents (oldest→newest) to tmp, then rename to dst.
 // Returns true on success; leaves dst untouched on any failure.
+// max_bytes bounds the file: when set, only the newest records that fit are
+// written (the rest — oldest — are dropped). 0 = unbounded (whole ring).
 template<typename T>
-static bool _snapWrite(RingBuf<T>& ring, const char* tmp, const char* dst) {
+static bool _snapWrite(RingBuf<T>& ring, const char* tmp, const char* dst, size_t max_bytes) {
   uint32_t cnt = ring.cnt;
+  if (cnt == 0) return true;
+
+  // Bound to the newest records that fit the budget (header + N*sizeof(T)).
+  if (max_bytes > sizeof(SnapHeader)) {
+    uint32_t fit = (uint32_t)((max_bytes - sizeof(SnapHeader)) / sizeof(T));
+    if (cnt > fit) cnt = fit;
+  }
   if (cnt == 0) return true;
 
   File f = LittleFS.open(tmp, "w");
@@ -87,18 +97,22 @@ static uint32_t _snapRead(RingBuf<T>& ring, const char* path) {
   return n;
 }
 
-// Save both rings to LittleFS. Skipped if LittleFS is not mounted.
-static void snapshotSave(RingBuf<SecRecord>& secBuf, RingBuf<MinRecord>& minBuf) {
-  if (!lfsOk) return;
+// Save both rings to LittleFS. Skipped (treated as success) if LittleFS is not
+// mounted or persistence is OFF. Returns true only when both writes succeed —
+// the caller feeds this to the persist guard. Snapshots are bounded by
+// gSnapSecMax/gSnapMinMax (0 = unbounded) so the write always fits the partition.
+static bool snapshotSave(RingBuf<SecRecord>& secBuf, RingBuf<MinRecord>& minBuf) {
+  if (!lfsOk || gPersistMode == 0) return true;
   uint32_t t0 = millis();
-  bool ok1 = _snapWrite(secBuf, SEC_SNAP_TMP, SEC_SNAP_BIN);
-  bool ok2 = _snapWrite(minBuf, MIN_SNAP_TMP, MIN_SNAP_BIN);
+  bool ok1 = _snapWrite(secBuf, SEC_SNAP_TMP, SEC_SNAP_BIN, gSnapSecMax);
+  bool ok2 = _snapWrite(minBuf, MIN_SNAP_TMP, MIN_SNAP_BIN, gSnapMinMax);
   if (!ok1) errorLog("ERROR", "Snapshot write failed: sec");
   if (!ok2) errorLog("ERROR", "Snapshot write failed: min");
   Serial.printf("[SNAP] sec=%s (%u rec)  min=%s (%u rec)  %u ms\n",
                 ok1 ? "ok" : "FAIL", (unsigned)secBuf.cnt,
                 ok2 ? "ok" : "FAIL", (unsigned)minBuf.cnt,
                 (unsigned)(millis() - t0));
+  return ok1 && ok2;
 }
 
 // Restore both rings from LittleFS snapshots. Call once after ring init + LittleFS mount.

@@ -1,6 +1,7 @@
 #pragma once
 #include <LittleFS.h>
 #include "Config.h"
+#include "PersistBudget.h"
 
 // Binary append log of MinRecord structs.
 // File: /energy.bin  (32 bytes per record, no header)
@@ -25,6 +26,10 @@ static bool energyLogInit() {
   _lfsOk = true;
   size_t used  = LittleFS.usedBytes();
   size_t total = LittleFS.totalBytes();
+  // Derive per-consumer LittleFS budgets from the real partition size. Small
+  // partitions (S3-Zero 128 KB) get every consumer bounded so writes always
+  // fit; partitions >= 1 MB are left unbounded (prior behavior).
+  persistComputeBudgets(total);
   uint32_t recs = 0;
   if (LittleFS.exists(ENERGY_FILE)) {
     File f = LittleFS.open(ENERGY_FILE, "r");
@@ -35,44 +40,57 @@ static bool energyLogInit() {
   return true;
 }
 
-static void energyLogAppend(const MinRecord& rec) {
-  if (!_lfsOk) return;
-
-  // Rotate if approaching cap: delete oldest half by rewriting.
-  // Rotation buffer is ps_malloc(~600 KB); if PSRAM is absent/exhausted the
-  // alloc fails and rotation is skipped — the file then grows past ENERGY_MAX.
-  // Acceptable on boards with PSRAM (all current targets); revisit if porting
-  // to a no-PSRAM board.
-  if (LittleFS.exists(ENERGY_FILE)) {
-    File f = LittleFS.open(ENERGY_FILE, "r");
-    if (f && f.size() >= ENERGY_MAX) {
-      size_t sz    = f.size();
-      size_t keep  = sz / 2;
-      // Align to record boundary
-      size_t skip  = (sz - keep) / sizeof(MinRecord) * sizeof(MinRecord);
-      keep         = sz - skip;
-      uint8_t* tmp = (uint8_t*)ps_malloc(keep);
-      if (tmp) {
-        f.seek(skip);
-        f.read(tmp, keep);
-        f.close();
-        LittleFS.remove(ENERGY_FILE);
-        File nf = LittleFS.open(ENERGY_FILE, "w");
-        if (nf) { nf.write(tmp, keep); nf.close(); }
-        free(tmp);
-        Serial.printf("[LFS] Rotated energy.bin: kept %u bytes\n", (unsigned)keep);
-      } else {
-        f.close();
-      }
-    } else if (f) {
-      f.close();
-    }
-  }
-
-  File f = LittleFS.open(ENERGY_FILE, "a");
-  if (!f) { Serial.println("[LFS] Append failed"); return; }
-  f.write((const uint8_t*)&rec, sizeof(MinRecord));
+// Rotate energy.bin if it has reached its cap: keep the newest half.
+// Cap is the runtime budget (gEnergyMax) when set, else the compiled ENERGY_MAX.
+// Returns true if the file is now under cap (or didn't need rotating).
+static bool _energyRotate() {
+  size_t cap = gEnergyMax ? gEnergyMax : ENERGY_MAX;
+  if (!LittleFS.exists(ENERGY_FILE)) return true;
+  File f = LittleFS.open(ENERGY_FILE, "r");
+  if (!f) return true;
+  if (f.size() < cap) { f.close(); return true; }
+  // Rotation buffer is ps_malloc(keep); if PSRAM is absent/exhausted the alloc
+  // fails and rotation is skipped — the file then grows past cap. Acceptable on
+  // boards with PSRAM (all current targets); revisit if porting to a no-PSRAM board.
+  size_t sz    = f.size();
+  size_t keep  = sz / 2;
+  size_t skip  = (sz - keep) / sizeof(MinRecord) * sizeof(MinRecord);  // align
+  keep         = sz - skip;
+  uint8_t* tmp = (uint8_t*)ps_malloc(keep);
+  if (!tmp) { f.close(); return false; }
+  f.seek(skip);
+  f.read(tmp, keep);
   f.close();
+  LittleFS.remove(ENERGY_FILE);
+  File nf = LittleFS.open(ENERGY_FILE, "w");
+  bool ok = false;
+  if (nf) { ok = (nf.write(tmp, keep) == keep); nf.close(); }
+  free(tmp);
+  Serial.printf("[LFS] Rotated energy.bin: kept %u bytes\n", (unsigned)keep);
+  return ok;
+}
+
+// Append one MinRecord. Skipped (treated as success) when persistence is OFF or
+// LittleFS is down. Returns true only on a confirmed full-size write — the
+// caller feeds this to the persist guard. On a short write (partition full) it
+// force-rotates once and retries before giving up.
+static bool energyLogAppend(const MinRecord& rec) {
+  if (!_lfsOk || gPersistMode == 0) return true;
+
+  _energyRotate();
+
+  for (int attempt = 0; attempt < 2; attempt++) {
+    File f = LittleFS.open(ENERGY_FILE, "a");
+    if (f) {
+      size_t n = f.write((const uint8_t*)&rec, sizeof(MinRecord));
+      f.close();
+      if (n == sizeof(MinRecord)) return true;
+    }
+    // Short write or open failed → partition likely full. Force-rotate and retry.
+    if (attempt == 0 && !_energyRotate()) break;
+  }
+  Serial.println("[LFS] Append failed");
+  return false;
 }
 
 static uint32_t energyLogCount() {
@@ -86,7 +104,7 @@ static uint32_t energyLogCount() {
 
 // Save prevBoxKwh[3] and prevBoxKvarh[3] to /prev_box.bin (24 bytes, fixed-size overwrite).
 static void energySavePrevBox(const float kwh[3], const float kvarh[3]) {
-  if (!_lfsOk) return;
+  if (!_lfsOk || gPersistMode == 0) return;
   File f = LittleFS.open(PREV_BOX_FILE, "w");
   if (!f) { Serial.println("[LFS] prev_box write failed"); return; }
   f.write((const uint8_t*)kwh,   3 * sizeof(float));
