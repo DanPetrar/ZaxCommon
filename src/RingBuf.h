@@ -30,6 +30,7 @@
 
 template<typename T>
 struct RingBuf {
+  typedef T rec_t;   // record type, for ring-generic templates (Snapshot.h)
   T*       buf     = nullptr;
   uint32_t cap     = 0;   // capacity actually obtained (0 = dead ring)
   uint32_t req_cap = 0;   // capacity last requested (cap < req_cap → downgraded)

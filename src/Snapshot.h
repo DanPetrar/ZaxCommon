@@ -36,8 +36,10 @@ struct SnapHeader {
 
 // Write the newest cnt ring records (oldest→newest) into tmp.
 // Removes a partial tmp on failure.
-template<typename T>
-static bool _snapTmpWrite(RingBuf<T>& ring, const char* tmp, uint32_t cnt) {
+// Ring = RingBuf<T> or SegRingBuf<T> — anything with rec_t/get/push/cnt.
+template<typename Ring>
+static bool _snapTmpWrite(Ring& ring, const char* tmp, uint32_t cnt) {
+  typedef typename Ring::rec_t T;
   File f = LittleFS.open(tmp, "w");
   if (!f) return false;
 
@@ -60,8 +62,9 @@ static bool _snapTmpWrite(RingBuf<T>& ring, const char* tmp, uint32_t cnt) {
 // tight-space retry below, which drops dst first.
 // max_bytes bounds the file: when set, only the newest records that fit are
 // written (the rest — oldest — are dropped). 0 = unbounded (whole ring).
-template<typename T>
-static bool _snapWrite(RingBuf<T>& ring, const char* tmp, const char* dst, size_t max_bytes) {
+template<typename Ring>
+static bool _snapWrite(Ring& ring, const char* tmp, const char* dst, size_t max_bytes) {
+  typedef typename Ring::rec_t T;
   uint32_t cnt = ring.cnt;
   if (cnt == 0) return true;
 
@@ -88,8 +91,9 @@ static bool _snapWrite(RingBuf<T>& ring, const char* tmp, const char* dst, size_
 
 // Read snapshot file and push records (oldest-first) into ring.
 // If the snapshot has more records than ring.cap, the oldest are naturally overwritten.
-template<typename T>
-static uint32_t _snapRead(RingBuf<T>& ring, const char* path) {
+template<typename Ring>
+static uint32_t _snapRead(Ring& ring, const char* path) {
+  typedef typename Ring::rec_t T;
   if (!LittleFS.exists(path)) return 0;
   File f = LittleFS.open(path, "r");
   if (!f) return 0;
@@ -119,7 +123,8 @@ static uint32_t _snapRead(RingBuf<T>& ring, const char* path) {
 // mounted or persistence is OFF. Returns true only when both writes succeed —
 // the caller feeds this to the persist guard. Snapshots are bounded by
 // gSnapSecMax/gSnapMinMax (0 = unbounded) so the write always fits the partition.
-static bool snapshotSave(RingBuf<SecRecord>& secBuf, RingBuf<MinRecord>& minBuf) {
+template<typename SecRing, typename MinRing>
+static bool snapshotSave(SecRing& secBuf, MinRing& minBuf) {
   if (!lfsOk || gPersistMode == 0) return true;
   uint32_t t0 = millis();
   bool ok1 = _snapWrite(secBuf, SEC_SNAP_TMP, SEC_SNAP_BIN, gSnapSecMax);
@@ -134,7 +139,8 @@ static bool snapshotSave(RingBuf<SecRecord>& secBuf, RingBuf<MinRecord>& minBuf)
 }
 
 // Restore both rings from LittleFS snapshots. Call once after ring init + LittleFS mount.
-static void snapshotLoad(RingBuf<SecRecord>& secBuf, RingBuf<MinRecord>& minBuf) {
+template<typename SecRing, typename MinRing>
+static void snapshotLoad(SecRing& secBuf, MinRing& minBuf) {
   if (!lfsOk) return;
   uint32_t n1 = _snapRead(secBuf, SEC_SNAP_BIN);
   uint32_t n2 = _snapRead(minBuf, MIN_SNAP_BIN);
