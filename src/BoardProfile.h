@@ -29,7 +29,10 @@
   #define PSRAM_USABLE      ZAX_KB(1400)  // relocatable pool (proven ≥1.36 MB in use)
   #define PSRAM_MAX_ALLOC   ZAX_KB(768)   // single-block ceiling (contiguity limit)
   #define PSRAM_HEADROOM    ZAX_KB(16)
-  #define OTA_SCAN_BYTES    ZAX_KB(512)   // WebUI OTA meta-scan buffer (must stay allocatable)
+  #define OTA_SCAN_BYTES    ZAX_KB(512)   // OTA meta-scan WINDOW (leading bytes searched for
+                                          // ZaxOtaMeta). Since fw v1.0.6 the scan is streaming —
+                                          // NO allocation; kept in the budget assert as a
+                                          // conservative margin until the Phase-3 re-budget.
   #define SEC_CAP_LTE   7200u             // 2 h at 1 rec/s
   #define MIN_CAP_LTE  10080u             // 7 d at 1 rec/min
   // ADF aliases LTE on the Zero (locked decision, buffer-redesign-plan.md §5):
