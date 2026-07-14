@@ -55,10 +55,15 @@ static uint32_t elapsedMin(uint32_t onsetMs) {
 // ── Call every loop() iteration (skip in demo mode) ──────────────────────────
 
 static void faultCheckComm(uint32_t lastDataMs, const ZaxConfig& cfg) {
+  if (!faultEnabled(BIT_COMM_LOST, cfg)) {
+    // Disabled ⇒ no detection at all; force-clear a stale latch silently so it
+    // can't freeze latched or emit recovery messages (Unit_B log-flood bug)
+    if (faults.commLost) { faults.commLost = false; faults.onsetCommLost = 0; gFaultChanged = true; }
+    return;
+  }
   uint32_t tmo  = (uint32_t)cfg.comm_timeout_s * 1000UL;
   bool     lost = (millis() - lastDataMs) >= tmo;
   if (lost && !faults.commLost) {
-    if (!faultEnabled(BIT_COMM_LOST, cfg)) return;
     faults.commLost      = true;
     faults.onsetCommLost = millis();
     gFaultChanged        = true;
@@ -92,49 +97,58 @@ static void faultCheckSec(const SecRecord& rec, const ZaxConfig& cfg) {
     else if (v > cfg.volt_max)  newVolt = 3;
     else                        newVolt = 0;
 
-    if (newVolt != faults.voltState[i]) {
-      // Determine which bit gates this volt sub-type
-      uint8_t bit = (newVolt == 1) ? BIT_VOLT_ZERO :
-                    (newVolt == 2) ? BIT_VOLT_UNDER :
-                    (newVolt == 3) ? BIT_VOLT_OVER  : 0xFF;
+    static const uint8_t voltSubBit[4] = {0xFF, BIT_VOLT_ZERO, BIT_VOLT_UNDER, BIT_VOLT_OVER};
 
-      // Only suppress new fault entry; recovery always goes through
-      if (newVolt != 0 && bit != 0xFF && !faultEnabled(bit, cfg)) {
-        // Check disabled — update state silently so recovery fires correctly later
-        faults.voltState[i] = newVolt;
-      } else {
-        char msg[64];
-        const char* lvl;
-        const char* code;
-        if (newVolt == 0) {
+    // Disabled sub-type ⇒ no detection at all: treat the reading as OK
+    if (newVolt != 0 && !faultEnabled(voltSubBit[newVolt], cfg)) newVolt = 0;
+    // A latched sub-type whose bit got disabled is cleared silently — else it
+    // would freeze latched forever or flood recovery messages (Unit_B bug)
+    uint8_t curVolt = faults.voltState[i];
+    if (curVolt != 0 && !faultEnabled(voltSubBit[curVolt], cfg)) {
+      faults.voltState[i] = 0; faults.onsetVolt[i] = 0; gFaultChanged = true;
+      curVolt = 0;
+    }
+
+    if (newVolt != curVolt) {
+      char msg[64];
+      const char* lvl;
+      const char* code;
+      if (newVolt == 0) {
+        // Recovery text must mirror its onset: "restored" is for recovery-from-
+        // absence; recovery-from-excess reads backwards, so over-V says "cleared"
+        if (curVolt == 3)
+          snprintf(msg, sizeof(msg), "Phase %s: overvoltage cleared %.1fV", FAULT_CH[i], v);
+        else
           snprintf(msg, sizeof(msg), "Phase %s: voltage restored %.1fV", FAULT_CH[i], v);
-          lvl = "INFO";  code = "volt_ok";
-          faults.onsetVolt[i] = 0;
-        } else if (newVolt == 1) {
-          snprintf(msg, sizeof(msg), "Phase %s: zero voltage", FAULT_CH[i]);
-          lvl = "ALERT"; code = "volt_zero";
-          faults.onsetVolt[i] = millis();
-        } else if (newVolt == 2) {
-          snprintf(msg, sizeof(msg), "Phase %s: undervoltage %.1fV", FAULT_CH[i], v);
-          lvl = "WARN";  code = "volt_under";
-          faults.onsetVolt[i] = millis();
-        } else {
-          snprintf(msg, sizeof(msg), "Phase %s: overvoltage %.1fV", FAULT_CH[i], v);
-          lvl = "ALERT"; code = "volt_over";
-          faults.onsetVolt[i] = millis();
-        }
-        faults.voltState[i] = newVolt;
-        gFaultChanged        = true;
-        errorLog(lvl, msg);
-        mqttFaultEvent(lvl, code, i, msg);
+        lvl = "INFO";  code = "volt_ok";
+        faults.onsetVolt[i] = 0;
+      } else if (newVolt == 1) {
+        snprintf(msg, sizeof(msg), "Phase %s: zero voltage", FAULT_CH[i]);
+        lvl = "ALERT"; code = "volt_zero";
+        faults.onsetVolt[i] = millis();
+      } else if (newVolt == 2) {
+        snprintf(msg, sizeof(msg), "Phase %s: undervoltage %.1fV", FAULT_CH[i], v);
+        lvl = "WARN";  code = "volt_under";
+        faults.onsetVolt[i] = millis();
+      } else {
+        snprintf(msg, sizeof(msg), "Phase %s: overvoltage %.1fV", FAULT_CH[i], v);
+        lvl = "ALERT"; code = "volt_over";
+        faults.onsetVolt[i] = millis();
       }
+      faults.voltState[i] = newVolt;
+      gFaultChanged        = true;
+      errorLog(lvl, msg);
+      mqttFaultEvent(lvl, code, i, msg);
     }
 
     // ── Current (only meaningful when voltage is present) ────────────────────
     if (v > 1.0f) {
-      bool over = (a > cfg.current_max);
-      if (over && !faults.currOver[i]) {
-        if (faultEnabled(BIT_CURR_OVER, cfg)) {
+      if (!faultEnabled(BIT_CURR_OVER, cfg)) {
+        // Disabled ⇒ no detection; force-clear a stale latch silently
+        if (faults.currOver[i]) { faults.currOver[i] = false; faults.onsetCurrOver[i] = 0; gFaultChanged = true; }
+      } else {
+        bool over = (a > cfg.current_max);
+        if (over && !faults.currOver[i]) {
           char msg[64];
           snprintf(msg, sizeof(msg), "Phase %s: overcurrent %.1fA", FAULT_CH[i], a);
           faults.currOver[i]      = true;
@@ -142,52 +156,50 @@ static void faultCheckSec(const SecRecord& rec, const ZaxConfig& cfg) {
           gFaultChanged           = true;
           errorLog("ALERT", msg);
           mqttFaultEvent("ALERT", "curr_over", i, msg);
-        } else {
-          faults.currOver[i] = true;
+        } else if (!over && faults.currOver[i]) {
+          char msg[64];
+          snprintf(msg, sizeof(msg), "Phase %s: overcurrent cleared %.1fA", FAULT_CH[i], a);
+          faults.currOver[i]      = false;
+          faults.onsetCurrOver[i] = 0;
+          gFaultChanged           = true;
+          errorLog("INFO", msg);
+          mqttFaultEvent("INFO", "curr_ok", i, msg);
         }
-      } else if (!over && faults.currOver[i]) {
-        char msg[64];
-        snprintf(msg, sizeof(msg), "Phase %s: current restored %.1fA", FAULT_CH[i], a);
-        faults.currOver[i]      = false;
-        faults.onsetCurrOver[i] = 0;
-        gFaultChanged           = true;
-        errorLog("INFO", msg);
-        mqttFaultEvent("INFO", "curr_ok", i, msg);
       }
 
-      bool czero = (a < 0.05f);
-      if (czero && !faults.currZero[i]) {
-        if (faultEnabled(BIT_CURR_ZERO, cfg)) {
+      if (!faultEnabled(BIT_CURR_ZERO, cfg)) {
+        if (faults.currZero[i]) { faults.currZero[i] = false; faults.onsetCurrZero[i] = 0; gFaultChanged = true; }
+      } else {
+        bool czero = (a < 0.05f);
+        if (czero && !faults.currZero[i]) {
           char msg[64];
           snprintf(msg, sizeof(msg), "Phase %s: zero current, voltage=%.1fV", FAULT_CH[i], v);
           faults.onsetCurrZero[i] = millis();
           errorLog("WARN", msg);
           mqttFaultEvent("WARN", "curr_zero", i, msg);
-        } else {
-          faults.onsetCurrZero[i] = millis();
         }
+        if (!czero && faults.currZero[i]) faults.onsetCurrZero[i] = 0;
+        if (czero != faults.currZero[i]) gFaultChanged = true;
+        faults.currZero[i] = czero;
       }
-      if (!czero && faults.currZero[i]) faults.onsetCurrZero[i] = 0;
-      if (czero != faults.currZero[i]) gFaultChanged = true;
-      faults.currZero[i] = czero;
 
       // ── Power factor (only with meaningful load) ──────────────────────────
       if (a > 0.1f) {
-        bool low = (absPf < cfg.pf_min);
-        if (low && !faults.pfLow[i]) {
-          if (faultEnabled(BIT_PF_LOW, cfg)) {
+        if (!faultEnabled(BIT_PF_LOW, cfg)) {
+          if (faults.pfLow[i]) { faults.pfLow[i] = false; faults.onsetPfLow[i] = 0; gFaultChanged = true; }
+        } else {
+          bool low = (absPf < cfg.pf_min);
+          if (low && !faults.pfLow[i]) {
             char msg[64];
             snprintf(msg, sizeof(msg), "Phase %s: low PF %.2f", FAULT_CH[i], absPf);
             faults.onsetPfLow[i] = millis();
             errorLog("WARN", msg);
             mqttFaultEvent("WARN", "pf_low", i, msg);
-          } else {
-            faults.onsetPfLow[i] = millis();
           }
+          if (!low && faults.pfLow[i]) faults.onsetPfLow[i] = 0;
+          if (low != faults.pfLow[i]) gFaultChanged = true;
+          faults.pfLow[i] = low;
         }
-        if (!low && faults.pfLow[i]) faults.onsetPfLow[i] = 0;
-        if (low != faults.pfLow[i]) gFaultChanged = true;
-        faults.pfLow[i] = low;
       } else {
         if (faults.pfLow[i]) { gFaultChanged = true; faults.onsetPfLow[i] = 0; }
         faults.pfLow[i] = false;
@@ -202,21 +214,21 @@ static void faultCheckSec(const SecRecord& rec, const ZaxConfig& cfg) {
 
     // ── Frequency (R channel only — same grid source for all phases) ─────────
     if (i == 0 && hz > 1.0f) {
-      bool outBand = (hz < cfg.freq_min || hz > cfg.freq_max);
-      if (outBand && !faults.freqFault) {
-        if (faultEnabled(BIT_FREQ, cfg)) {
+      if (!faultEnabled(BIT_FREQ, cfg)) {
+        if (faults.freqFault) { faults.freqFault = false; faults.onsetFreq = 0; gFaultChanged = true; }
+      } else {
+        bool outBand = (hz < cfg.freq_min || hz > cfg.freq_max);
+        if (outBand && !faults.freqFault) {
           char msg[48];
           snprintf(msg, sizeof(msg), "Freq out of band: %.2fHz", hz);
           faults.onsetFreq = millis();
           errorLog("WARN", msg);
           mqttFaultEvent("WARN", "freq", -1, msg);
-        } else {
-          faults.onsetFreq = millis();
         }
+        if (!outBand && faults.freqFault) faults.onsetFreq = 0;
+        if (outBand != faults.freqFault) gFaultChanged = true;
+        faults.freqFault = outBand;
       }
-      if (!outBand && faults.freqFault) faults.onsetFreq = 0;
-      if (outBand != faults.freqFault) gFaultChanged = true;
-      faults.freqFault = outBand;
     }
   }
 }
