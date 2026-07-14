@@ -34,8 +34,30 @@ struct SnapHeader {
   uint16_t reserved;
 };
 
+// Write the newest cnt ring records (oldest→newest) into tmp.
+// Removes a partial tmp on failure.
+template<typename T>
+static bool _snapTmpWrite(RingBuf<T>& ring, const char* tmp, uint32_t cnt) {
+  File f = LittleFS.open(tmp, "w");
+  if (!f) return false;
+
+  SnapHeader hdr = { 0x5A415853UL, DATA_VERSION, (uint8_t)sizeof(T), 0 };
+  bool ok = (f.write((const uint8_t*)&hdr, sizeof(hdr)) == sizeof(hdr));
+
+  for (uint32_t age = cnt; age-- > 0 && ok; ) {
+    T rec;
+    if (!ring.get(age, rec)) { ok = false; break; }
+    if (f.write((const uint8_t*)&rec, sizeof(T)) != sizeof(T)) ok = false;
+  }
+  f.close();
+
+  if (!ok) LittleFS.remove(tmp);
+  return ok;
+}
+
 // Write ring contents (oldest→newest) to tmp, then rename to dst.
-// Returns true on success; leaves dst untouched on any failure.
+// Returns true on success; leaves dst untouched on any failure — except the
+// tight-space retry below, which drops dst first.
 // max_bytes bounds the file: when set, only the newest records that fit are
 // written (the rest — oldest — are dropped). 0 = unbounded (whole ring).
 template<typename T>
@@ -50,20 +72,16 @@ static bool _snapWrite(RingBuf<T>& ring, const char* tmp, const char* dst, size_
   }
   if (cnt == 0) return true;
 
-  File f = LittleFS.open(tmp, "w");
-  if (!f) return false;
-
-  SnapHeader hdr = { 0x5A415853UL, DATA_VERSION, (uint8_t)sizeof(T), 0 };
-  bool ok = (f.write((const uint8_t*)&hdr, sizeof(hdr)) == sizeof(hdr));
-
-  for (uint32_t age = cnt; age-- > 0 && ok; ) {
-    T rec;
-    if (!ring.get(age, rec)) { ok = false; break; }
-    if (f.write((const uint8_t*)&rec, sizeof(T)) != sizeof(T)) ok = false;
+  if (!_snapTmpWrite(ring, tmp, cnt)) {
+    // Not enough space for old + new to coexist (near-full partition, or a
+    // unit still carrying a pre-v1.0.7 oversized snapshot next to the new
+    // budget). Drop the old snapshot and retry once — atomicity is sacrificed
+    // only in this degraded case, and only this snapshot type is at risk.
+    if (!LittleFS.exists(dst)) return false;
+    LittleFS.remove(dst);
+    errorLog("WARN", "Snapshot tight on space — old dropped, retrying");
+    if (!_snapTmpWrite(ring, tmp, cnt)) return false;
   }
-  f.close();
-
-  if (!ok) { LittleFS.remove(tmp); return false; }
   LittleFS.remove(dst);
   return LittleFS.rename(tmp, dst);
 }
