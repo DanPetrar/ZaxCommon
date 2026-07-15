@@ -26,7 +26,8 @@ static const char MIN_SNAP_BIN[] = "/min_snap.bin";
 extern bool lfsOk;
 
 // 8-byte header prepended to every snapshot file.
-// If magic, data_ver, or rec_size mismatches on load, the file is discarded.
+// Bad magic is always discarded. A data_ver/rec_size mismatch is discarded too,
+// unless the caller supplies a SnapMigrateFn to decode the old layout.
 struct SnapHeader {
   uint32_t magic;     // 0x5A415853 ('ZAXS')
   uint8_t  data_ver;  // DATA_VERSION at write time
@@ -89,24 +90,40 @@ static bool _snapWrite(Ring& ring, const char* tmp, const char* dst, size_t max_
   return LittleFS.rename(tmp, dst);
 }
 
+// Optional per-version migrator: given the stored header and the file
+// positioned right after it, decode an old on-disk format into the ring.
+// Returns the number of records restored (0 = give up, file is discarded).
+template<typename Ring>
+using SnapMigrateFn = uint32_t(*)(const SnapHeader& hdr, File& f, Ring& ring);
+
 // Read snapshot file and push records (oldest-first) into ring.
 // If the snapshot has more records than ring.cap, the oldest are naturally overwritten.
+// migrate (optional): called when data_ver/rec_size don't match current — lets a
+// caller decode an old on-disk layout instead of discarding. No migrator (the
+// default) reproduces today's behaviour exactly.
 template<typename Ring>
-static uint32_t _snapRead(Ring& ring, const char* path) {
+static uint32_t _snapRead(Ring& ring, const char* path, SnapMigrateFn<Ring> migrate = nullptr) {
   typedef typename Ring::rec_t T;
   if (!LittleFS.exists(path)) return 0;
   File f = LittleFS.open(path, "r");
   if (!f) return 0;
 
   SnapHeader hdr;
-  if (f.read((uint8_t*)&hdr, sizeof(hdr)) != sizeof(hdr) ||
-      hdr.magic    != 0x5A415853UL ||
-      hdr.data_ver != DATA_VERSION  ||
-      hdr.rec_size != (uint8_t)sizeof(T)) {
+  if (f.read((uint8_t*)&hdr, sizeof(hdr)) != sizeof(hdr) || hdr.magic != 0x5A415853UL) {
     f.close();
     LittleFS.remove(path);
     errorLog("WARN", "Snap header mismatch — discarded");
     return 0;
+  }
+
+  if (hdr.data_ver != DATA_VERSION || hdr.rec_size != (uint8_t)sizeof(T)) {
+    uint32_t n = migrate ? migrate(hdr, f, ring) : 0;
+    f.close();
+    if (n == 0) {
+      LittleFS.remove(path);
+      errorLog("WARN", "Snap header mismatch — discarded");
+    }
+    return n;
   }
 
   uint32_t n = 0;
@@ -139,11 +156,14 @@ static bool snapshotSave(SecRing& secBuf, MinRing& minBuf) {
 }
 
 // Restore both rings from LittleFS snapshots. Call once after ring init + LittleFS mount.
+// secMigrate/minMigrate (optional): see SnapMigrateFn / _snapRead.
 template<typename SecRing, typename MinRing>
-static void snapshotLoad(SecRing& secBuf, MinRing& minBuf) {
+static void snapshotLoad(SecRing& secBuf, MinRing& minBuf,
+                          SnapMigrateFn<SecRing> secMigrate = nullptr,
+                          SnapMigrateFn<MinRing> minMigrate = nullptr) {
   if (!lfsOk) return;
-  uint32_t n1 = _snapRead(secBuf, SEC_SNAP_BIN);
-  uint32_t n2 = _snapRead(minBuf, MIN_SNAP_BIN);
+  uint32_t n1 = _snapRead(secBuf, SEC_SNAP_BIN, secMigrate);
+  uint32_t n2 = _snapRead(minBuf, MIN_SNAP_BIN, minMigrate);
   if (n1 || n2)
     Serial.printf("[SNAP] Restored sec=%u  min=%u records from flash\n", n1, n2);
 }
