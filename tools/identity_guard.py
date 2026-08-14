@@ -21,7 +21,7 @@ Subcommands:
 Names accepted for --expect-* may be ints or the canonical names below.
 """
 
-import argparse, glob, json, struct, subprocess, sys, urllib.request
+import argparse, glob, json, os, struct, subprocess, sys, urllib.request
 
 # ---- ZaxIdent layout (must mirror ZaxCommon/src/ZaxIdent.h — frozen) ----------
 ZAXIDENT_MAGIC      = 0x5A584931        # 'ZXI1'
@@ -44,7 +44,7 @@ _OTA_SIZE = struct.calcsize(_OTA_FMT)    # = 32
 assert _OTA_SIZE == 32, _OTA_SIZE
 
 ESPTOOL = next(iter(sorted(glob.glob(
-    "/home/pi/.arduino15/packages/esp32/tools/esptool_py/*/esptool"), reverse=True)), None)
+    os.path.expanduser("~/.arduino15/packages/esp32/tools/esptool_py/*/esptool")), reverse=True)), None)
 APP_OFFSET   = 0x10000      # app0 start under defaultffat / default schemes
 SCAN_BYTES   = 0x80000      # 512 KB from app start — descriptor sits ~130 KB in
 
