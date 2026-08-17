@@ -2,7 +2,8 @@
 // PSRAM limits, ring capacities and the OTA scan reserve.
 //
 // OPT-IN header. A sketch that includes it MUST be built with exactly one
-// explicit board flag (-DBOARD_S3ZERO / -DBOARD_LILYGO_T7S3 / -DBOARD_DEVKITC1);
+// explicit board flag (-DBOARD_S3ZERO / -DBOARD_LILYGO_T7S3 / -DBOARD_DEVKITC1 /
+// -DBOARD_S3ETH);
 // there is no silent default — a missing flag once selected S3-Zero caps on a
 // LilyGO build path and vice versa, and the un-summed budgets caused the
 // Unit_B dead-ring incident (ZaxModbus Doc/psram-ring-safety-spec.md §1/§7).
@@ -44,8 +45,8 @@
   #define ZAX_MIN_SEG_BYTES ZAX_KB(16)    // 512 MinRecord (32 B) per segment
   #define ZAX_MIN_SEGS_LTE  20u           // 10,240 recs ≈ 7.1 d (today's shape)
   #define ZAX_MIN_SEGS_ADF   4u           // 2,048 recs ≈ 34 h — sec gets the rest
-#elif defined(BOARD_LILYGO_T7S3) || defined(BOARD_DEVKITC1)
-  // LilyGO T7-S3 / DevKitC-1 N16R8 — ALWAYS 8 MB OPI PSRAM / 16 MB flash
+#elif defined(BOARD_LILYGO_T7S3) || defined(BOARD_DEVKITC1) || defined(BOARD_S3ETH)
+  // LilyGO T7-S3 / DevKitC-1 N16R8 / Waveshare ESP32-S3-ETH — ALWAYS 8 MB OPI PSRAM / 16 MB flash
   #define PSRAM_TOTAL_BYTES ZAX_KB(8192)
   #define PSRAM_USABLE      ZAX_KB(7600)
   #define PSRAM_MAX_ALLOC   ZAX_KB(6656)
@@ -60,7 +61,7 @@
   #define ZAX_MIN_SEGS_LTE  85u           // 43,520 recs ≈ 30 d
   #define ZAX_MIN_SEGS_ADF   4u
 #else
-  #error "BoardProfile.h requires an explicit board flag: build with -DBOARD_S3ZERO, -DBOARD_LILYGO_T7S3 or -DBOARD_DEVKITC1 (no silent default)."
+  #error "BoardProfile.h requires an explicit board flag: build with -DBOARD_S3ZERO, -DBOARD_LILYGO_T7S3, -DBOARD_DEVKITC1 or -DBOARD_S3ETH (no silent default)."
 #endif
 
 // Compile-time PSRAM budget guard, Phase-3 shape: ring sizes are decided at
