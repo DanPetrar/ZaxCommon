@@ -36,6 +36,7 @@ enum : uint8_t {
   ZAXID_BOARD_S3ZERO        = 1,   // Waveshare ESP32-S3-Zero (4 MB)
   ZAXID_BOARD_DEVKITC1      = 2,   // ESP32-S3 DevKitC-1
   ZAXID_BOARD_CLASSIC_ESP32 = 3,   // classic ESP32-D0WD (e.g. EmonESP slaves, 16 MB)
+  ZAXID_BOARD_S3ETH         = 4,   // Waveshare ESP32-S3-ETH (16 MB, W5500 Ethernet)
 };
 
 // ---- variant — destination/feature of the same hardware. APPEND ONLY. ---------
