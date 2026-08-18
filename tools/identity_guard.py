@@ -32,7 +32,7 @@ assert _SIZE == 32, _SIZE
 
 PROJECTS = {1: "EnergyCalibrator", 2: "ZaxModbus", 3: "ZaxEnergySurvey",
             10: "EmonESP-base", 11: "EmonESP-V001", 12: "EmonESP-V002"}
-BOARDS   = {0: "lilygo", 1: "s3zero", 2: "devkitc1", 3: "classic_esp32"}
+BOARDS   = {0: "lilygo", 1: "s3zero", 2: "devkitc1", 3: "classic_esp32", 4: "s3eth"}
 VARIANTS = {0: "default", 1: "base", 2: "sat"}
 
 # Legacy descriptor used by the Zax family (EnergyCalibrator/ZaxModbus/ZaxEnergySurvey).
@@ -205,6 +205,13 @@ def cmd_check(a):
               "firmware). Pass --first-flash to allow flashing a fresh/legacy board.")
         sys.exit(1)
     if (dev["project_id"], dev["board_type"], dev["variant"]) != (exp_p, exp_b, exp_v):
+        # Legacy-format device (pre-ZaxIdent) of the same project: it predates
+        # per-board granularity, so a board_type mismatch alone doesn't mean
+        # "wrong unit" — allow it under --first-flash, same as a blank device.
+        if a.first_flash and dev.get("_fmt") == "zaxotameta" and dev["project_id"] == exp_p:
+            print(f"[guard] OK (first-flash): legacy-descriptor device migrating to {exp}; "
+                  f"was {fmt(dev)}")
+            return
         print(f"[guard] ABORT: device identity != expected (wrong unit on {a.port})\n"
               f"  expected: {exp}\n  device  : {fmt(dev)}")
         sys.exit(1)
