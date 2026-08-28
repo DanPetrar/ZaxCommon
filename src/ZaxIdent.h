@@ -44,6 +44,7 @@ enum : uint8_t {
   ZAXID_VARIANT_DEFAULT = 0,   // single-build project
   ZAXID_VARIANT_BASE    = 1,   // EmonESP BASE
   ZAXID_VARIANT_SAT     = 2,   // EmonESP SAT
+  ZAXID_VARIANT_4MB     = 3,   // ZaxModbus, experimental 4 MB partition table
 };
 
 struct __attribute__((packed)) ZaxIdent {
