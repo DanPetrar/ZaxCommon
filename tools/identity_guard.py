@@ -33,7 +33,7 @@ assert _SIZE == 32, _SIZE
 PROJECTS = {1: "EnergyCalibrator", 2: "ZaxModbus", 3: "ZaxEnergySurvey",
             10: "EmonESP-base", 11: "EmonESP-V001", 12: "EmonESP-V002"}
 BOARDS   = {0: "lilygo", 1: "s3zero", 2: "devkitc1", 3: "classic_esp32", 4: "s3eth"}
-VARIANTS = {0: "default", 1: "base", 2: "sat"}
+VARIANTS = {0: "default", 1: "base", 2: "sat", 3: "4mb"}
 
 # Legacy descriptor used by the Zax family (EnergyCalibrator/ZaxModbus/ZaxEnergySurvey).
 # Their OTA path already enforces project_id + hw_target; this lets the same guard read
@@ -212,6 +212,22 @@ def cmd_check(a):
             print(f"[guard] OK (first-flash): legacy-descriptor device migrating to {exp}; "
                   f"was {fmt(dev)}")
             return
+        # Deliberate variant transition — i.e. repartitioning a unit. Same project,
+        # same board, only the variant differs; --first-flash does NOT cover this,
+        # because the device has a perfectly valid modern descriptor and refusing is
+        # the correct default. This is the USB-only bridge for that one operation.
+        # The OTA path has no equivalent and must not get one: over the air, a
+        # variant mismatch means an image for the wrong partition layout, and the
+        # partition table cannot be rewritten over the air anyway.
+        if (a.allow_variant_change
+                and dev["project_id"] == exp_p and dev["board_type"] == exp_b
+                and dev["variant"] != exp_v):
+            print(f"[guard] OK (variant change ALLOWED): {_name(VARIANTS, dev['variant'])}"
+                  f"({VARIANTS.get(dev['variant'],'?')}) -> "
+                  f"{_name(VARIANTS, exp_v)}({VARIANTS.get(exp_v,'?')}) on {a.port}\n"
+                  f"  This reflashes the PARTITION TABLE. LittleFS content is lost;\n"
+                  f"  NVS (config, WiFi, Modbus address) is preserved.")
+            return
         print(f"[guard] ABORT: device identity != expected (wrong unit on {a.port})\n"
               f"  expected: {exp}\n  device  : {fmt(dev)}")
         sys.exit(1)
@@ -228,6 +244,9 @@ def main():
     c.add_argument("--bin", required=True); c.add_argument("--port", required=True)
     c.add_argument("--expect-project", required=True); c.add_argument("--expect-board", required=True)
     c.add_argument("--expect-variant", required=True); c.add_argument("--host")
+    c.add_argument("--allow-variant-change", action="store_true",
+                   help="permit a deliberate variant transition (repartitioning) on a "
+                        "device that already has a valid descriptor. USB only.")
     c.add_argument("--first-flash", action="store_true"); c.set_defaults(fn=cmd_check)
     a = ap.parse_args()
     a.fn(a)
