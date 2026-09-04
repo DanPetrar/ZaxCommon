@@ -12,7 +12,7 @@ static volatile uint8_t gPersistMode = 1;
 
 // Per-consumer LittleFS byte budgets, derived at mount from totalBytes().
 // 0 = "use the compiled default / unbounded" — the value stays 0 on partitions
-// >= 1 MB, so big-flash boards (and projects that never call the computer) keep
+// >= PERSIST_UNBOUND_MIN, so big-flash boards (and projects that never call it) keep
 // byte-identical prior behavior. On the 128 KB S3-Zero partition the budgets
 // bind so every write always fits.
 static size_t gEnergyMax  = 0;   // energy.bin rotation cap   (0 → ENERGY_MAX)
@@ -21,7 +21,7 @@ static size_t gSnapMinMax = 0;   // min snapshot file cap     (0 → full ring)
 static size_t gErrLogMax  = 0;   // errors.log rotation cap   (0 → ERR_LOG_MAX)
 
 // Compute budgets as fractions of the LittleFS partition. Called once from
-// energyLogInit() with LittleFS.totalBytes(). Partitions >= 1 MB are left
+// energyLogInit() with LittleFS.totalBytes(). Partitions >= PERSIST_UNBOUND_MIN are left
 // unbounded (0) so large-flash boards are unchanged; smaller partitions get
 // every consumer bounded to fit.
 //
@@ -38,8 +38,8 @@ static size_t gErrLogMax  = 0;   // errors.log rotation cap   (0 → ERR_LOG_MAX
 // of the ring, paid for with half the energy log. Gated on ZAX_PARTS_4MB (set by
 // build_s3zero.sh / build_testmode.sh) so the min_spiffs fleet and the other
 // ZaxCommon consumers — EnergyCalibrator, ZaxMonitor — keep 40/16/10/8 unchanged.
-// Both splits bind: persistComputeBudgets() only opts out above 1 MB, and the
-// 4 MB table's LittleFS is 896 KB.
+// Both splits bind: persistComputeBudgets() opts out only above 4 MB (register
+// #18, raised from 1 MB on 2026-09-04), and the 4 MB table's LittleFS is 896 KB.
 #ifdef ZAX_PARTS_4MB
   #define ZAX_BUDGET_ENERGY 20
   #define ZAX_BUDGET_SEC    28
@@ -66,9 +66,33 @@ static_assert(2 * ZAX_BUDGET_SEC + ZAX_BUDGET_ENERGY + ZAX_BUDGET_MIN
 static_assert(ZAX_BUDGET_SEC >= ZAX_BUDGET_MIN,
               "sec budget must dominate min — the 2x above assumes sec is the larger transient");
 
+// [NEW-BOX register #18, FIXED 2026-09-04] The unbounded threshold was 1 MB.
+//
+// The 4 MB experimental table's LittleFS is 917,504 B — only 131,072 B (128 KB)
+// under that cliff. Any growth of that partition past 1 MB would have silently
+// unbound every budget, and the failure mode is not subtle: unbounded files fill
+// the partition until the hourly sec snapshot can no longer complete its
+// tmp+rename, permanently. That is exactly what wedged Unit_B in July 2025 at
+// 81% used.
+//
+// "Silently" is the defect. A partition size is a build-time property nobody
+// re-examines, so crossing the line would have produced no error, no log line,
+// and a unit that simply stops keeping history.
+//
+// Raised to 4 MB, chosen so the boards we actually ship cannot reach it: a 4 MB
+// flash chip cannot host a 4 MB filesystem once app slots and NVS are taken, so
+// every 4 MB-board partition now binds no matter how it is re-split. 16 MB
+// boards (S3-ETH: 12,451,840 B) stay unbounded exactly as before, so this
+// changes nothing running today — it only removes the cliff between them.
+//
+// Also no longer silent: both regimes announce themselves with their numbers.
+#define PERSIST_UNBOUND_MIN (4UL * 1024UL * 1024UL)
+
 static inline void persistComputeBudgets(size_t total) {
-  if (total >= (1024UL * 1024UL)) {   // >= 1 MB → leave unbounded (big-flash)
+  if (total >= PERSIST_UNBOUND_MIN) {   // big-flash → leave unbounded
     gEnergyMax = gSnapSecMax = gSnapMinMax = gErrLogMax = 0;
+    Serial.printf("[BUDGET] LittleFS %u B >= %lu B — budgets UNBOUNDED\n",
+                  (unsigned)total, (unsigned long)PERSIST_UNBOUND_MIN);
     return;
   }
   gEnergyMax  = total * ZAX_BUDGET_ENERGY / 100;   // long-term energy log
@@ -76,4 +100,7 @@ static inline void persistComputeBudgets(size_t total) {
   gSnapMinMax = total * ZAX_BUDGET_MIN    / 100;   // minutes ring snapshot
   size_t err  = total * ZAX_BUDGET_ERR    / 100;
   gErrLogMax  = (err < 65536UL) ? err : 65536UL;   // cap at 64 KB
+  Serial.printf("[BUDGET] LittleFS %u B — energy %u / sec %u / min %u / err %u B\n",
+                (unsigned)total, (unsigned)gEnergyMax, (unsigned)gSnapSecMax,
+                (unsigned)gSnapMinMax, (unsigned)gErrLogMax);
 }
