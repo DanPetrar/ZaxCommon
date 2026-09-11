@@ -32,7 +32,8 @@ assert _SIZE == 32, _SIZE
 
 PROJECTS = {1: "EnergyCalibrator", 2: "ZaxModbus", 3: "ZaxEnergySurvey",
             10: "EmonESP-base", 11: "EmonESP-V001", 12: "EmonESP-V002"}
-BOARDS   = {0: "lilygo", 1: "s3zero", 2: "devkitc1", 3: "classic_esp32", 4: "s3eth"}
+BOARDS   = {0: "lilygo", 1: "s3zero", 2: "devkitc1", 3: "classic_esp32", 4: "s3eth",
+            5: "newbox_s3zero", 6: "newbox_s3eth"}
 VARIANTS = {0: "default", 1: "base", 2: "sat", 3: "4mb"}
 
 # Legacy descriptor used by the Zax family (EnergyCalibrator/ZaxModbus/ZaxEnergySurvey).
