@@ -180,6 +180,7 @@ static bool _energyRotate() {
   uint32_t nrec = _energyRecs(sz);
   if (nrec < 2) { f.close(); return true; }      // nothing meaningful to halve
   uint32_t keepRec = nrec / 2;
+  while (keepRec > 1 && sizeof(EnergyHeader) + (size_t)keepRec * sizeof(MinRecord) >= cap) keepRec /= 2;   // N14: a file far above a lowered cap gets under it in one rotation
   size_t skip  = sizeof(EnergyHeader) + (size_t)(nrec - keepRec) * sizeof(MinRecord);
   size_t keep  = (size_t)keepRec * sizeof(MinRecord);
   uint8_t* tmp = (uint8_t*)ps_malloc(keep);

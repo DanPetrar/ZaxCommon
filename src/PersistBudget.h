@@ -33,6 +33,9 @@ static size_t gErrLogMax  = 0;   // errors.log rotation cap   (0 → ERR_LOG_MAX
 // snapshot failed permanently (seen on Unit_B at 81% used, 2026-07-13/14).
 // New split: 40+16+10+8 = 74% steady + 16% sec tmp = 90%, ~10% slack.
 //
+// [2026-11-16] N14 (fix plan, owner option A): 4 MB table now energy 2 / sec 28 / min 24 / err 8 = 2+28+24+8 = 62% steady
+// + 28% sec tmp = 90%; the min snapshot over a restart grows 982 -> 3,932 records (65.5 h); the energy log keeps 164-328
+// records, only its last record is read (Doc/new-hardware/N14-design-fable-20261116.md).
 // [2026-08-31] NEW-BOX register #17, option B — experimental 4 MB table ONLY:
 // 20+28+6+8 = 62% steady + 28% sec tmp = 90%. Buys sec retention 34.5% -> 60.4%
 // of the ring, paid for with half the energy log. Gated on ZAX_PARTS_4MB (set by
@@ -41,9 +44,9 @@ static size_t gErrLogMax  = 0;   // errors.log rotation cap   (0 → ERR_LOG_MAX
 // Both splits bind: persistComputeBudgets() opts out only above 4 MB (register
 // #18, raised from 1 MB on 2026-09-04), and the 4 MB table's LittleFS is 896 KB.
 #ifdef ZAX_PARTS_4MB
-  #define ZAX_BUDGET_ENERGY 20
+  #define ZAX_BUDGET_ENERGY  2
   #define ZAX_BUDGET_SEC    28
-  #define ZAX_BUDGET_MIN     6
+  #define ZAX_BUDGET_MIN    24
 #else
   #define ZAX_BUDGET_ENERGY 40
   #define ZAX_BUDGET_SEC    16
