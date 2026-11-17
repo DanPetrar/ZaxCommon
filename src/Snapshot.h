@@ -6,10 +6,11 @@
 #include "PersistBudget.h"
 
 // Periodic atomic snapshot of PSRAM rings to LittleFS.
-// Write flow: write to .tmp → remove(.bin) → rename(.tmp, .bin).
-//   A write failure leaves the old .bin untouched. The one uncovered case is a
-//   power loss in the remove→rename window: .bin is gone, only .tmp remains.
-//   LittleFS rename won't replace an existing dst, hence the explicit remove.
+// Write flow: write to .tmp → rename(.tmp, .bin).
+//   A write failure leaves the old .bin untouched. In ESP32 core 3.3.7 rename
+//   replaces an existing dst in one step (esp_littlefs.c:2018-2031, lfs.c:3990-4054),
+//   so there is no remove(.bin) window. A .tmp left by a restart is handled at
+//   boot by _snapRecoverTmp() in SecSnapDelta.h (N16, fw 1.2.34).
 // Restore flow: push records oldest-first into ring on boot.
 
 #if TEST_MODE
@@ -86,8 +87,7 @@ static bool _snapWrite(Ring& ring, const char* tmp, const char* dst, size_t max_
     errorLog("WARN", "Snapshot tight on space — old dropped, retrying");
     if (!_snapTmpWrite(ring, tmp, cnt)) return false;
   }
-  LittleFS.remove(dst);
-  return LittleFS.rename(tmp, dst);
+  return LittleFS.rename(tmp, dst);   // replaces dst atomically (core 3.3.7)
 }
 
 // Optional per-version migrator: given the stored header and the file

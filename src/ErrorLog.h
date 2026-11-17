@@ -6,9 +6,11 @@
 // Rolling text error log on LittleFS.
 // Format: "YYYY-MM-DD HH:MM:SS [LEVEL] message\n"
 // If clock is not set, timestamps use "BOOT+Xs" format.
-// Rotates at ERR_LOG_MAX: keeps the second half (newest entries).
+// Rotates at ERR_LOG_MAX: keeps the second half (newest entries), written to
+// ERR_LOG_TMP and renamed over the log (N29, fw 1.2.34).
 
 static const char   ERR_LOG_FILE[] = "/errors.log";
+static const char   ERR_LOG_TMP[]  = "/errors.tmp";
 static const size_t ERR_LOG_MAX    = 65536UL;   // 64 KB
 
 extern bool lfsOk;
@@ -34,12 +36,25 @@ static void _errRotate() {
   if (!buf)   buf = (uint8_t*)malloc(keepSz);
   if (!buf) { f.close(); return; }
 
-  f.read(buf, keepSz);
+  size_t got = f.read(buf, keepSz);
   f.close();
+  if (got != keepSz) { free(buf); return; }      // short read: keep the log as it is
 
-  LittleFS.remove(ERR_LOG_FILE);
-  File nf = LittleFS.open(ERR_LOG_FILE, "w");
-  if (nf) { nf.write(buf, keepSz); nf.close(); }
+  // tmp + rename: the log is never gone, a restart leaves the old file or the new.
+  LittleFS.remove(ERR_LOG_TMP);                  // stale tmp from an earlier restart
+  File nf = LittleFS.open(ERR_LOG_TMP, "w");
+  bool wrote = false;
+  if (nf) { wrote = (nf.write(buf, keepSz) == keepSz); nf.close(); }
+  if (wrote) {
+    if (!LittleFS.rename(ERR_LOG_TMP, ERR_LOG_FILE)) LittleFS.remove(ERR_LOG_TMP);
+  } else {
+    // No room for old + new together: degraded path (remove + write), so the log
+    // can not stay at the cap for ever. Same trade as Snapshot.h _snapWrite.
+    LittleFS.remove(ERR_LOG_TMP);
+    LittleFS.remove(ERR_LOG_FILE);
+    File of = LittleFS.open(ERR_LOG_FILE, "w");
+    if (of) { of.write(buf, keepSz); of.close(); }
+  }
   free(buf);
 }
 
@@ -100,8 +115,10 @@ static void errorLog(const char* level, const char* msg) {
 
 // Call from loop() periodically (every ~5 min). Handles log rotation without
 // blocking errorLog() on the critical UART receive path.
+// Not with Onboard Storage off or in the power-fail STOPPED state (both set
+// gPersistMode 0): a rotation is a flash write.
 static void errorLogIdle() {
-  if (lfsOk) _errRotate();
+  if (lfsOk && gPersistMode != 0) _errRotate();
 }
 
 static void errorLogClear() {
